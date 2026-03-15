@@ -2,6 +2,7 @@ import { supabase } from '../config/supabase';
 import { Order, OrderCreate, OrderUpdate, OrderStatus } from '../types/order';
 
 export class OrderRepository {
+  validSortColumns: string[] = ['total_amount', 'created_at', 'updated_at'];
   /**
    * Get all orders
    */
@@ -16,6 +17,60 @@ export class OrderRepository {
     }
 
     return data || [];
+  }
+
+  /**
+   * Find orders with filtering, sorting, and pagination
+   * @param options Filtering, sorting, and pagination options
+   */
+  async findWithFilters(options: {
+    salesmanIds?: string[];
+    sortBy?: string;
+    sortOrder?: 'asc' | 'desc';
+    page?: number;
+    count?: number;
+  }): Promise<{ data: Order[]; total: number; page: number; count: number }> {
+    const {
+      salesmanIds,
+      sortBy = 'created_at',
+      sortOrder = 'desc',
+      page = 1,
+      count = 20,
+    } = options;
+
+    // Validate sortBy matches schema columns
+    if (!this.validSortColumns.includes(sortBy)) {
+      throw new Error(`Invalid sort column: ${sortBy}. Valid columns are: ${this.validSortColumns.join(', ')}`);
+    }
+
+    // Build query
+    let query = supabase.from('orders').select('*', { count: 'exact' });
+
+    // Apply salesman filter
+    if (salesmanIds && salesmanIds.length > 0) {
+      query = query.in('salesman_id', salesmanIds);
+    }
+
+    // Apply sorting
+    query = query.order(sortBy, { ascending: sortOrder === 'asc' });
+
+    // Apply pagination
+    const from = (page - 1) * count;
+    const to = from + count - 1;
+    query = query.range(from, to);
+
+    const { data, error, count: totalCount } = await query;
+
+    if (error) {
+      throw new Error(`Failed to fetch orders: ${error.message}`);
+    }
+
+    return {
+      data: data || [],
+      total: totalCount || 0,
+      page,
+      count: data?.length || 0,
+    };
   }
 
   /**
@@ -75,7 +130,7 @@ export class OrderRepository {
   /**
    * Create a new order
    */
-  async create(order: OrderCreate & { total_amount?: number }): Promise<Order> {
+  async create(order: OrderCreate & { total_amount?: number; status?: OrderStatus }): Promise<Order> {
     const { data, error } = await supabase
       .from('orders')
       .insert({

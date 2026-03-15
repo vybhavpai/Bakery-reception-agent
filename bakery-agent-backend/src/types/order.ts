@@ -11,7 +11,7 @@ export interface Order {
 
 export interface OrderCreate {
   salesman_id: string;
-  status?: OrderStatus;
+  // status?: OrderStatus;
   // total_amount will be calculated from order items
 }
 

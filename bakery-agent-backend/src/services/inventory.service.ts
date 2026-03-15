@@ -107,4 +107,52 @@ export class InventoryService {
 
     return item.stock_count;
   }
+
+  /**
+   * Get multiple inventory items by IDs (bulk fetch)
+   */
+  async getItemsByIds(itemIds: string[]): Promise<Inventory[]> {
+    if (itemIds.length === 0) {
+      return [];
+    }
+
+    return this.repository.findByMultipleIds(itemIds);
+  }
+
+  /**
+   * Get multiple inventory items by names (bulk fetch)
+   */
+  async getItemsByNames(itemNames: string[]): Promise<Inventory[]> {
+    if (itemNames.length === 0) {
+      return [];
+    }
+
+    // Validate all names are strings
+    for (const name of itemNames) {
+      if (!name || typeof name !== 'string') {
+        throw new Error('All item names must be non-empty strings');
+      }
+    }
+
+    return this.repository.findByMultipleNames(itemNames);
+  }
+
+  /**
+   * Bulk update stock counts for multiple items
+   * @param updates Array of { item_id, stock_count } objects
+   */
+  async bulkUpdateStock(updates: Array<{ item_id: string; stock_count: number }>): Promise<Inventory[]> {
+    if (updates.length === 0) {
+      return [];
+    }
+
+    // Validate all stock counts are non-negative
+    for (const update of updates) {
+      if (update.stock_count < 0) {
+        throw new Error(`Stock count cannot be negative for item_id: ${update.item_id}`);
+      }
+    }
+
+    return this.repository.bulkUpdateStock(updates);
+  }
 }

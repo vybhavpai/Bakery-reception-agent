@@ -1,6 +1,7 @@
 import { OrderRepository } from '../repositories/order.repository';
 import { OrderItemRepository } from '../repositories/order-item.repository';
 import { OrderItemService } from './order-item.service';
+import { InventoryService } from './inventory.service';
 import { Order, OrderCreate, OrderUpdate, OrderStatus } from '../types/order';
 import { OrderItemCreate } from '../types/order-item';
 
@@ -12,7 +13,8 @@ export class OrderService {
   constructor(
     repository?: OrderRepository,
     orderItemRepository?: OrderItemRepository,
-    orderItemService?: OrderItemService
+    orderItemService?: OrderItemService,
+    inventoryService?: InventoryService
   ) {
     this.repository = repository || new OrderRepository();
     this.orderItemRepository = orderItemRepository || new OrderItemRepository();
@@ -24,6 +26,19 @@ export class OrderService {
    */
   async getAllOrders(): Promise<Order[]> {
     return this.repository.findAll();
+  }
+
+  /**
+   * Get orders with filtering, sorting, and pagination
+   */
+  async getOrdersWithFilters(options: {
+    salesmanIds?: string[];
+    sortBy?: string;
+    sortOrder?: 'asc' | 'desc';
+    page?: number;
+    count?: number;
+  }): Promise<{ data: Order[]; total: number; page: number; count: number }> {
+    return this.repository.findWithFilters(options);
   }
 
   /**
@@ -49,7 +64,9 @@ export class OrderService {
 
   /**
    * Create a new order with items
-   * Total amount is calculated from order items after they're created
+   * Order is created with status 'pending' and total_amount 0
+   * If item creation succeeds, order is updated to 'confirmed' with calculated total
+   * If item creation fails, order is updated to 'cancelled'
    */
   async createOrder(order: OrderCreate, items: OrderItemCreate[]): Promise<Order> {
     if (!order.salesman_id) {
@@ -60,10 +77,10 @@ export class OrderService {
       throw new Error('At least one order item is required');
     }
 
-    // Create order with initial total_amount of 0 (will be recalculated)
+    // Create order with initial status 'pending' and total_amount 0
     const createdOrder = await this.repository.create({
       salesman_id: order.salesman_id,
-      status: order.status || 'pending',
+      status: 'pending',
       total_amount: 0,
     });
 
@@ -73,13 +90,23 @@ export class OrderService {
       order_id: createdOrder.order_id,
     }));
 
-    const createdItems = await this.orderItemService.createItems(orderItems);
+    try {
+      // Create items - this will validate stock and deduct inventory
+      const result = await this.orderItemService.createItems(orderItems);
 
-    // Calculate total amount from created items
-    const totalAmount = createdItems.reduce((sum, item) => sum + item.line_total, 0);
-
-    // Update order with calculated total
-    return this.repository.update(createdOrder.order_id, { total_amount: totalAmount });
+      // If successful, update order to 'confirmed' with calculated total
+      return this.repository.update(createdOrder.order_id, {
+        status: 'confirmed',
+        total_amount: result.totalAmount,
+      });
+    } catch (error) {
+      // If item creation fails, update order to 'cancelled'
+      await this.repository.update(createdOrder.order_id, {
+        status: 'cancelled',
+      });
+      // Re-throw the error so caller knows what went wrong
+      throw error;
+    }
   }
 
   /**

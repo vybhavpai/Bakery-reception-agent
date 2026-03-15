@@ -38,6 +38,19 @@ export class InventoryRepository {
     return data;
   }
 
+  async findByMultipleIds(itemIds: string[]): Promise<Inventory[]> {
+    const { data, error } = await supabase
+      .from('inventory')
+      .select('*')
+      .in('item_id', itemIds);
+
+    if (error) {
+      throw new Error(`Failed to fetch inventory items by multiple IDs: ${error.message}`);
+    }
+
+    return data || [];
+  }
+
   /**
    * Get inventory item by name (case-insensitive partial match)
    */
@@ -56,6 +69,41 @@ export class InventoryRepository {
     }
 
     return data || null;
+  }
+
+  /**
+   * Get inventory items by multiple names (case-insensitive partial match)
+   * Uses database-level OR filtering with ILIKE for better performance
+   * @param itemNames Array of item names to search for
+   */
+  async findByMultipleNames(itemNames: string[]): Promise<Inventory[]> {
+    if (itemNames.length === 0) {
+      return [];
+    }
+
+    // Normalize all names to lowercase
+    const normalizedNames = itemNames.map(name => name.toLowerCase().trim()).filter(name => name.length > 0);
+
+    if (normalizedNames.length === 0) {
+      return [];
+    }
+
+    // Build OR filter string for Supabase PostgREST
+    // Format: "column.ilike.value1,column.ilike.value2"
+    const orConditions = normalizedNames
+      .map(name => `item_name.ilike.%${name}%`)
+      .join(',');
+
+    const { data, error } = await supabase
+      .from('inventory')
+      .select('*')
+      .or(orConditions);
+
+    if (error) {
+      throw new Error(`Failed to fetch inventory items by names: ${error.message}`);
+    }
+
+    return data || [];
   }
 
   /**
@@ -98,6 +146,27 @@ export class InventoryRepository {
    */
   async updateStock(itemId: string, stockCount: number): Promise<Inventory> {
     return this.update(itemId, { stock_count: stockCount });
+  }
+
+  /**
+   * Bulk update stock counts for multiple items
+   * @param updates Array of { item_id, stock_count } objects
+   */
+  async bulkUpdateStock(updates: Array<{ item_id: string; stock_count: number }>): Promise<Inventory[]> {
+    if (updates.length === 0) {
+      return [];
+    }
+
+    // Use Supabase RPC or individual updates in a transaction-like manner
+    // Since Supabase doesn't have native bulk update, we'll use Promise.all
+    // but this is still more efficient than sequential calls
+    const results = await Promise.all(
+      updates.map(({ item_id, stock_count }) =>
+        this.update(item_id, { stock_count })
+      )
+    );
+
+    return results;
   }
 
   /**
