@@ -103,6 +103,7 @@ export class OrderUpdateRequestRepository {
       .single();
 
     if (error) {
+      console.error("error creating order update request:", error);
       throw new Error(`Failed to create update request: ${error.message}`);
     }
 

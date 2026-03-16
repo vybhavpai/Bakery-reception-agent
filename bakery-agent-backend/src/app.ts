@@ -256,6 +256,47 @@ app.get('/api/orders', async (req: Request, res: Response) => {
   }
 });
 
+// GET /api/orders/:id - get order details with items and units
+app.get('/api/orders/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const orderWithItems = await orderService.getOrderWithItems(id);
+
+    if (!orderWithItems) {
+      return res.status(404).json({
+        error: 'Order not found',
+        details: `No order found with id: ${id}`,
+      });
+    }
+
+    // Fetch inventory items to get units
+    const itemIds = orderWithItems.items.map(item => item.item_id);
+    const inventoryItems = await inventoryService.getItemsByIds(itemIds);
+    const inventoryMap = new Map(inventoryItems.map(item => [item.item_id, item]));
+
+    // Enhance items with unit information
+    const itemsWithUnits = orderWithItems.items.map(item => {
+      const inventoryItem = inventoryMap.get(item.item_id);
+      return {
+        ...item,
+        unit: inventoryItem?.unit || 'units',
+      };
+    });
+
+    return res.json({
+      ...orderWithItems.order,
+      items: itemsWithUnits,
+    });
+  } catch (err) {
+    console.error('Error fetching order details:', err);
+    return res.status(500).json({
+      error: 'Failed to fetch order details',
+      details: err instanceof Error ? err.message : 'Unknown error',
+    });
+  }
+});
+
 // Phase 3: POST /api/orders - create order and deduct inventory
 app.post('/api/orders', async (req: Request, res: Response) => {
   try {
@@ -329,10 +370,29 @@ app.post('/api/order-update-requests', async (req: Request, res: Response) => {
     console.log("received order update request with body:", req.body);
     const { order_id, salesman_id, item_name, delta } = req.body;
 
-    if (!order_id || !salesman_id || !item_name || typeof delta !== 'number' || delta === 0) {
+    if (!order_id || !salesman_id || !item_name) {
       return res.status(400).json({
         error: 'Invalid payload',
-        details: 'order_id, salesman_id, item_name, and non-zero numeric delta are required',
+        details: 'order_id, salesman_id, and item_name are required',
+      });
+    }
+
+    let parsedDelta: number;
+    if (typeof delta === 'number') {
+      parsedDelta = delta;
+    } else {
+      parsedDelta = Number(delta);
+      if (isNaN(parsedDelta)) {
+        return res.status(400).json({
+          error: 'Invalid payload',
+          details: 'delta must be a non-zero numeric value',
+        });
+      }
+    }
+    if (parsedDelta === 0) {
+      return res.status(400).json({
+        error: 'Invalid payload',
+        details: 'delta must be a non-zero numeric value',
       });
     }
 
@@ -344,17 +404,17 @@ app.post('/api/order-update-requests', async (req: Request, res: Response) => {
         details: `No inventory item found with name: ${item_name}`,
       });
     }
-
+    
     const request = await orderUpdateRequestService.createRequest({
       order_id,
       salesman_id,
       requested_changes: [{
         item_id: inventoryItem.item_id,
         item_name: inventoryItem.item_name,
-        delta,
+        delta: parsedDelta,
       }],
     });
-
+    
     return res.status(201).json(request);
   } catch (err) {
     console.error('Error creating update request:', err);
