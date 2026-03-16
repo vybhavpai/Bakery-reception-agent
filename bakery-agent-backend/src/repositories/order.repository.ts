@@ -43,8 +43,10 @@ export class OrderRepository {
       throw new Error(`Invalid sort column: ${sortBy}. Valid columns are: ${this.validSortColumns.join(', ')}`);
     }
 
-    // Build query
-    let query = supabase.from('orders').select('*', { count: 'exact' });
+    // Build query with join to salesmen table to get salesman_name
+    let query = supabase
+      .from('orders')
+      .select('*, salesmen(name)', { count: 'exact' });
 
     // Apply salesman filter
     if (salesmanIds && salesmanIds.length > 0) {
@@ -65,11 +67,18 @@ export class OrderRepository {
       throw new Error(`Failed to fetch orders: ${error.message}`);
     }
 
+    // Transform data to flatten salesman name
+    const transformedData = (data || []).map((order: any) => ({
+      ...order,
+      salesman_name: order.salesmen?.name || null,
+      salesmen: undefined, // Remove nested salesmen object
+    }));
+
     return {
-      data: data || [],
+      data: transformedData,
       total: totalCount || 0,
       page,
-      count: data?.length || 0,
+      count: transformedData.length,
     };
   }
 

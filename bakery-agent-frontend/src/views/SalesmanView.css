@@ -1,0 +1,16 @@
+.salesman-view {
+  padding: 24px;
+  max-width: 1000px;
+  margin: 0 auto;
+}
+
+.salesman-view h1 {
+  margin-bottom: 24px;
+  color: #333;
+}
+
+.call-section {
+  margin-top: 24px;
+  display: flex;
+  justify-content: center;
+}

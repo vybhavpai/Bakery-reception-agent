@@ -1,24 +1,30 @@
 import { OrderRepository } from '../repositories/order.repository';
 import { OrderItemRepository } from '../repositories/order-item.repository';
 import { OrderItemService } from './order-item.service';
-import { InventoryService } from './inventory.service';
 import { Order, OrderCreate, OrderUpdate, OrderStatus } from '../types/order';
 import { OrderItemCreate } from '../types/order-item';
+import { InventoryRepository } from '../repositories/inventory.repository';
+import { InventoryService } from './inventory.service';
 
 export class OrderService {
   private repository: OrderRepository;
   private orderItemRepository: OrderItemRepository;
   private orderItemService: OrderItemService;
+  private inventoryRepository: InventoryRepository;
+  private inventoryService: InventoryService;
 
   constructor(
     repository?: OrderRepository,
     orderItemRepository?: OrderItemRepository,
     orderItemService?: OrderItemService,
+    inventoryRepository?: InventoryRepository,
     inventoryService?: InventoryService
   ) {
     this.repository = repository || new OrderRepository();
     this.orderItemRepository = orderItemRepository || new OrderItemRepository();
     this.orderItemService = orderItemService || new OrderItemService();
+    this.inventoryRepository = inventoryRepository || new InventoryRepository();
+    this.inventoryService = inventoryService || new InventoryService();
   }
 
   /**
@@ -149,6 +155,7 @@ export class OrderService {
 
   /**
    * Update order status
+   * Restores inventory when status changes to 'cancelled'
    */
   async updateOrderStatus(orderId: string, status: OrderStatus): Promise<Order> {
     const existingOrder = await this.repository.findById(orderId);
@@ -168,6 +175,33 @@ export class OrderService {
     const allowedStatuses = validTransitions[existingOrder.status];
     if (!allowedStatuses.includes(status)) {
       throw new Error(`Invalid status transition from ${existingOrder.status} to ${status}`);
+    }
+
+    // If changing to cancelled, restore inventory
+    if (status === 'cancelled' && existingOrder.status !== 'cancelled') {
+      const orderItems = await this.orderItemRepository.findByOrderId(orderId);
+      
+      if (orderItems.length > 0) {
+        // Get current inventory for all items
+        const itemIds = orderItems.map(item => item.item_id);
+        const inventoryItems = await this.inventoryRepository.findByMultipleIds(itemIds);
+        const inventoryMap = new Map(inventoryItems.map(item => [item.item_id, item]));
+
+        // Prepare stock updates - restore quantity for each item
+        const stockUpdates = orderItems.map(orderItem => {
+          const inventoryItem = inventoryMap.get(orderItem.item_id);
+          if (!inventoryItem) {
+            throw new Error(`Inventory item not found for item_id: ${orderItem.item_id}`);
+          }
+          return {
+            item_id: orderItem.item_id,
+            stock_count: inventoryItem.stock_count + orderItem.quantity,
+          };
+        });
+
+        // Bulk update inventory
+        await this.inventoryService.bulkUpdateStock(stockUpdates);
+      }
     }
 
     return this.repository.updateStatus(orderId, status);

@@ -34,6 +34,7 @@ app.get('/health', (req: Request, res: Response) => {
 app.get('/api/salesman', async (req: Request, res: Response) => {
   try {
     const { phone } = req.query;
+    console.debug("processing request to get salesman by phone:", phone, typeof(phone));
 
     if (!phone || typeof phone !== 'string') {
       // If no phone provided, return all salesmen
@@ -256,9 +257,74 @@ app.get('/api/orders', async (req: Request, res: Response) => {
   }
 });
 
+// Phase 4: PATCH /api/inventory/:item_id - update inventory item
+app.patch('/api/inventory/:item_id', async (req: Request, res: Response) => {
+  try {
+    const { item_id } = req.params;
+    const { stock_count, unit_price, unit } = req.body;
+
+    // Validate at least one field is provided
+    if (stock_count === undefined && unit_price === undefined && unit === undefined) {
+      return res.status(400).json({
+        error: 'Invalid payload',
+        details: 'At least one field (stock_count, unit_price, or unit) must be provided',
+      });
+    }
+
+    // Build update object with only provided fields
+    const updates: any = {};
+    if (stock_count !== undefined) {
+      if (typeof stock_count !== 'number' || stock_count < 0 || !Number.isInteger(stock_count)) {
+        return res.status(400).json({
+          error: 'Invalid stock_count',
+          details: 'stock_count must be a non-negative integer',
+        });
+      }
+      updates.stock_count = stock_count;
+    }
+
+    if (unit_price !== undefined) {
+      if (typeof unit_price !== 'number' || unit_price < 0) {
+        return res.status(400).json({
+          error: 'Invalid unit_price',
+          details: 'unit_price must be a non-negative number',
+        });
+      }
+      updates.unit_price = unit_price;
+    }
+
+    if (unit !== undefined) {
+      if (typeof unit !== 'string' || unit.trim().length === 0) {
+        return res.status(400).json({
+          error: 'Invalid unit',
+          details: 'unit must be a non-empty string',
+        });
+      }
+      updates.unit = unit.trim();
+    }
+
+    const updatedItem = await inventoryService.updateItem(item_id, updates);
+
+    return res.json(updatedItem);
+  } catch (err) {
+    console.error('Error updating inventory item:', err);
+    const errorMessage = err instanceof Error ? err.message : 'Internal server error';
+    
+    if (errorMessage.includes('not found')) {
+      return res.status(404).json({ error: errorMessage });
+    }
+
+    return res.status(500).json({
+      error: 'Failed to update inventory item',
+      details: errorMessage,
+    });
+  }
+});
+
 // GET /api/orders/:id - get order details with items and units
 app.get('/api/orders/:id', async (req: Request, res: Response) => {
   try {
+    console.log("received request to get order details with id:", req.params.id);
     const { id } = req.params;
 
     const orderWithItems = await orderService.getOrderWithItems(id);
@@ -275,24 +341,129 @@ app.get('/api/orders/:id', async (req: Request, res: Response) => {
     const inventoryItems = await inventoryService.getItemsByIds(itemIds);
     const inventoryMap = new Map(inventoryItems.map(item => [item.item_id, item]));
 
-    // Enhance items with unit information
-    const itemsWithUnits = orderWithItems.items.map(item => {
+    // Build simplified response with only required fields
+    const items = orderWithItems.items.map(item => {
       const inventoryItem = inventoryMap.get(item.item_id);
       return {
-        ...item,
-        unit: inventoryItem?.unit || 'units',
+        item_id: item.item_id,
+        item_name: item.item_name,
+        quantity: item.quantity,
+        units: inventoryItem?.unit || 'units',
       };
     });
 
     return res.json({
-      ...orderWithItems.order,
-      items: itemsWithUnits,
+      order_id: orderWithItems.order.order_id,
+      total_amount: orderWithItems.order.total_amount,
+      status: orderWithItems.order.status,
+      updated_at: orderWithItems.order.updated_at,
+      items: items,
     });
   } catch (err) {
     console.error('Error fetching order details:', err);
     return res.status(500).json({
       error: 'Failed to fetch order details',
       details: err instanceof Error ? err.message : 'Unknown error',
+    });
+  }
+});
+
+// GET /api/orders/:id/details - get full order details for modal (with all information)
+app.get('/api/orders/:id/details', async (req: Request, res: Response) => {
+  try {
+    console.log("received request to get full order details with id:", req.params.id);
+    const { id } = req.params;
+
+    const orderWithItems = await orderService.getOrderWithItems(id);
+
+    if (!orderWithItems) {
+      return res.status(404).json({
+        error: 'Order not found',
+        details: `No order found with id: ${id}`,
+      });
+    }
+
+    // Get salesman name
+    const salesman = await salesmanService.getSalesmanById(orderWithItems.order.salesman_id);
+    const salesmanName = salesman?.name || 'Unknown';
+
+    // Fetch inventory items to get units
+    const itemIds = orderWithItems.items.map(item => item.item_id);
+    const inventoryItems = await inventoryService.getItemsByIds(itemIds);
+    const inventoryMap = new Map(inventoryItems.map(item => [item.item_id, item]));
+
+    // Build full response with all fields
+    const items = orderWithItems.items.map(item => {
+      const inventoryItem = inventoryMap.get(item.item_id);
+      return {
+        order_item_id: item.order_item_id,
+        item_id: item.item_id,
+        item_name: item.item_name,
+        quantity: item.quantity,
+        unit: inventoryItem?.unit || 'units',
+        unit_price: item.unit_price,
+        line_total: item.line_total,
+      };
+    });
+
+    return res.json({
+      order_id: orderWithItems.order.order_id,
+      salesman_name: salesmanName,
+      status: orderWithItems.order.status,
+      total_amount: orderWithItems.order.total_amount,
+      created_at: orderWithItems.order.created_at,
+      updated_at: orderWithItems.order.updated_at,
+      items: items,
+    });
+  } catch (err) {
+    console.error('Error fetching full order details:', err);
+    return res.status(500).json({
+      error: 'Failed to fetch full order details',
+      details: err instanceof Error ? err.message : 'Unknown error',
+    });
+  }
+});
+
+// Phase 4: PATCH /api/orders/:id/status - update order status
+app.patch('/api/orders/:id/status', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    if (!status || typeof status !== 'string') {
+      return res.status(400).json({
+        error: 'Invalid payload',
+        details: 'status is required and must be a string',
+      });
+    }
+
+    // Validate status value
+    const validStatuses = ['pending', 'confirmed', 'delivered', 'paid', 'cancelled'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({
+        error: 'Invalid status',
+        details: `Status must be one of: ${validStatuses.join(', ')}`,
+      });
+    }
+
+    const updatedOrder = await orderService.updateOrderStatus(id, status as any);
+
+    return res.json(updatedOrder);
+  } catch (err) {
+    console.error('Error updating order status:', err);
+    const errorMessage = err instanceof Error ? err.message : 'Internal server error';
+    
+    if (errorMessage.includes('not found')) {
+      return res.status(404).json({ error: errorMessage });
+    }
+
+    if (errorMessage.includes('Invalid status transition')) {
+      return res.status(400).json({ error: errorMessage });
+    }
+
+    return res.status(500).json({
+      error: 'Failed to update order status',
+      details: errorMessage,
     });
   }
 });
@@ -364,6 +535,27 @@ app.post('/api/orders', async (req: Request, res: Response) => {
 });
 
 // Phase 6: Order Update Requests
+// GET /api/order-update-requests - get update requests (optionally filtered by status)
+app.get('/api/order-update-requests', async (req: Request, res: Response) => {
+  try {
+    const { status } = req.query;
+
+    if (status && status === 'pending') {
+      const requests = await orderUpdateRequestService.getPendingRequests();
+      return res.json(requests);
+    }
+
+    const requests = await orderUpdateRequestService.getAllRequests();
+    return res.json(requests);
+  } catch (err) {
+    console.error('Error fetching update requests:', err);
+    return res.status(500).json({
+      error: 'Failed to fetch update requests',
+      details: err instanceof Error ? err.message : 'Unknown error',
+    });
+  }
+});
+
 // POST /api/order-update-requests - create update request (single item change)
 app.post('/api/order-update-requests', async (req: Request, res: Response) => {
   try {
@@ -488,8 +680,8 @@ app.patch('/api/order-update-requests/:id/reject', async (req: Request, res: Res
 // POST /api/webhook/bolna - receive webhook from Bolna after call ends
 app.post('/api/webhook/bolna', async (req: Request, res: Response) => {
   try {
-    const { bolna_call_id, salesman_phone, summary, affected_order_ids } = req.body;
-    console.log("received webhook from bolna with body:", req.body);
+    const { id: bolna_call_id, context_details, transcript, user_number: salesman_phone, summary, affected_order_id } = req.body;
+    console.log("received webhook from bolna with body:", bolna_call_id, context_details, transcript, salesman_phone, summary, affected_order_id);
 
     if (!bolna_call_id) {
       return res.status(400).json({
@@ -523,8 +715,13 @@ app.post('/api/webhook/bolna', async (req: Request, res: Response) => {
     });
 
     // Link call log to orders if provided
-    if (affected_order_ids && Array.isArray(affected_order_ids) && affected_order_ids.length > 0) {
-      await callLogService.linkCallLogToOrders(callLog.call_log_id, affected_order_ids);
+    if (affected_order_id ) {
+      if(Array.isArray(affected_order_id) && affected_order_id.length > 0) {
+
+        await callLogService.linkCallLogToOrders(callLog.call_log_id, affected_order_id);
+      } else if(typeof affected_order_id === 'string') {
+        await callLogService.linkCallLogToOrder(callLog.call_log_id, affected_order_id);
+      }
     }
 
     return res.status(201).json({
