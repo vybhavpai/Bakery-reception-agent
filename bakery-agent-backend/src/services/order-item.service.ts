@@ -140,7 +140,6 @@ export class OrderItemService {
       };
     });
 
-    // Use inventory service for bulk update (it has validation)
     await this.inventoryService.bulkUpdateStock(stockUpdates);
 
     const createdItems = await this.repository.createMany(itemsWithPrices);

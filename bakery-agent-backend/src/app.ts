@@ -5,6 +5,8 @@ import { InventoryService } from './services/inventory.service';
 import { SalesmanService } from './services/salesman.service';
 import { BolnaService } from './services/bolna.service';
 import { OrderService } from './services/order.service';
+import { OrderUpdateRequestService } from './services/order-update-request.service';
+import { CallLogService } from './services/call-log.service';
 
 dotenv.config();
 
@@ -16,6 +18,8 @@ const inventoryService = new InventoryService();
 const salesmanService = new SalesmanService();
 const bolnaService = new BolnaService();
 const orderService = new OrderService();
+const orderUpdateRequestService = new OrderUpdateRequestService();
+const callLogService = new CallLogService();
 
 // Middleware
 app.use(cors());
@@ -314,6 +318,175 @@ app.post('/api/orders', async (req: Request, res: Response) => {
     return res.status(500).json({
       error: 'Failed to create order',
       details: err instanceof Error ? err.message : 'Unknown error',
+    });
+  }
+});
+
+// Phase 6: Order Update Requests
+// POST /api/order-update-requests - create update request (single item change)
+app.post('/api/order-update-requests', async (req: Request, res: Response) => {
+  try {
+    console.log("received order update request with body:", req.body);
+    const { order_id, salesman_id, item_name, delta } = req.body;
+
+    if (!order_id || !salesman_id || !item_name || typeof delta !== 'number' || delta === 0) {
+      return res.status(400).json({
+        error: 'Invalid payload',
+        details: 'order_id, salesman_id, item_name, and non-zero numeric delta are required',
+      });
+    }
+
+    // Look up item by name
+    const inventoryItem = await inventoryService.getItemByName(item_name);
+    if (!inventoryItem) {
+      return res.status(404).json({
+        error: 'Item not found',
+        details: `No inventory item found with name: ${item_name}`,
+      });
+    }
+
+    const request = await orderUpdateRequestService.createRequest({
+      order_id,
+      salesman_id,
+      requested_changes: [{
+        item_id: inventoryItem.item_id,
+        item_name: inventoryItem.item_name,
+        delta,
+      }],
+    });
+
+    return res.status(201).json(request);
+  } catch (err) {
+    console.error('Error creating update request:', err);
+    return res.status(500).json({
+      error: 'Failed to create update request',
+      details: err instanceof Error ? err.message : 'Unknown error',
+    });
+  }
+});
+
+// PATCH /api/order-update-requests/:id/approve - approve update request
+app.patch('/api/order-update-requests/:id/approve', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const request = await orderUpdateRequestService.approveRequest(id);
+
+    return res.json(request);
+  } catch (err) {
+    console.error('Error approving update request:', err);
+    const errorMessage = err instanceof Error ? err.message : 'Internal server error';
+    
+    // Check if it's a validation error
+    if (errorMessage.includes('not found') || errorMessage.includes('Cannot approve')) {
+      return res.status(400).json({ error: errorMessage });
+    }
+
+    return res.status(500).json({
+      error: 'Failed to approve update request',
+      details: errorMessage,
+    });
+  }
+});
+
+// PATCH /api/order-update-requests/:id/reject - reject update request
+app.patch('/api/order-update-requests/:id/reject', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+
+    // Default to 'admin_rejected' if no reason provided
+    const rejectionReason = reason || 'admin_rejected';
+
+    if (rejectionReason !== 'inventory_insufficient' && rejectionReason !== 'admin_rejected') {
+      return res.status(400).json({
+        error: 'Invalid rejection reason',
+        details: 'Reason must be either "inventory_insufficient" or "admin_rejected"',
+      });
+    }
+
+    const request = await orderUpdateRequestService.rejectRequest(id, rejectionReason);
+
+    return res.json(request);
+  } catch (err) {
+    console.error('Error rejecting update request:', err);
+    const errorMessage = err instanceof Error ? err.message : 'Internal server error';
+    
+    // Check if it's a validation error
+    if (errorMessage.includes('not found') || errorMessage.includes('Cannot reject')) {
+      return res.status(400).json({ error: errorMessage });
+    }
+
+    return res.status(500).json({
+      error: 'Failed to reject update request',
+      details: errorMessage,
+    });
+  }
+});
+
+// Phase 8: Bolna Webhook
+// POST /api/webhook/bolna - receive webhook from Bolna after call ends
+app.post('/api/webhook/bolna', async (req: Request, res: Response) => {
+  try {
+    const { bolna_call_id, salesman_phone, summary, affected_order_ids } = req.body;
+    console.log("received webhook from bolna with body:", req.body);
+
+    if (!bolna_call_id) {
+      return res.status(400).json({
+        error: 'Invalid payload',
+        details: 'bolna_call_id is required',
+      });
+    }
+
+    // Resolve phone to salesman_id
+    let salesman;
+    if (salesman_phone) {
+      salesman = await salesmanService.getSalesmanByPhone(salesman_phone);
+      if (!salesman) {
+        return res.status(404).json({
+          error: 'Salesman not found',
+          details: `No salesman found for phone number: ${salesman_phone}`,
+        });
+      }
+    } else {
+      return res.status(400).json({
+        error: 'Invalid payload',
+        details: 'salesman_phone is required',
+      });
+    }
+
+    // Create call log
+    const callLog = await callLogService.createCallLog({
+      salesman_id: salesman.salesman_id,
+      bolna_call_id,
+      summary: summary || undefined,
+    });
+
+    // Link call log to orders if provided
+    if (affected_order_ids && Array.isArray(affected_order_ids) && affected_order_ids.length > 0) {
+      await callLogService.linkCallLogToOrders(callLog.call_log_id, affected_order_ids);
+    }
+
+    return res.status(201).json({
+      success: true,
+      call_log_id: callLog.call_log_id,
+      message: 'Call log created successfully',
+    });
+  } catch (err) {
+    console.error('Error processing Bolna webhook:', err);
+    const errorMessage = err instanceof Error ? err.message : 'Internal server error';
+    
+    // Check if it's a duplicate call log
+    if (errorMessage.includes('already exists')) {
+      return res.status(409).json({
+        error: 'Call log already exists',
+        details: errorMessage,
+      });
+    }
+
+    return res.status(500).json({
+      error: 'Failed to process webhook',
+      details: errorMessage,
     });
   }
 });
