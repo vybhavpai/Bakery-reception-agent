@@ -84,5 +84,5 @@ export async function getOrderDetails(orderId: string): Promise<OrderDetails> {
 }
 
 export async function getOrderDetailsFull(orderId: string): Promise<OrderDetailsFull> {
-  return fetchAPI(`/api/orders/${orderId}/details`);
+  return fetchAPI(`/api/orders/details?order_id=${encodeURIComponent(orderId)}`);
 }

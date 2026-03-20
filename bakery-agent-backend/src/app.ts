@@ -25,6 +25,46 @@ const callLogService = new CallLogService();
 app.use(cors());
 app.use(express.json());
 
+// Debug logger middleware
+app.use((req: Request, res: Response, next: Function) => {
+  const startTime = Date.now();
+  
+  // Log request
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+  
+  // Log request body if present
+  if (req.body && Object.keys(req.body).length > 0) {
+    console.log('Request Body:', JSON.stringify(req.body, null, 2));
+  }
+  
+  // Log query parameters if present
+  if (req.query && Object.keys(req.query).length > 0) {
+    console.log('Query Params:', JSON.stringify(req.query, null, 2));
+  }
+  
+  // Capture original json method
+  const originalJson = res.json.bind(res);
+  
+  // Override json method to log response
+  res.json = function(body: any) {
+    const duration = Date.now() - startTime;
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path} - ${res.statusCode} (${duration}ms)`);
+    
+    // Log response body (limit size for readability)
+    const responseStr = JSON.stringify(body, null, 2);
+    if (responseStr.length > 1000) {
+      console.log('Response Body:', responseStr.substring(0, 1000) + '... (truncated)');
+    } else {
+      console.log('Response Body:', responseStr);
+    }
+    console.log('---');
+    
+    return originalJson(body);
+  };
+  
+  next();
+});
+
 // Health check endpoint (Phase 0)
 app.get('/health', (req: Request, res: Response) => {
   res.json({ status: 'ok', message: 'Bakery Agent Backend is running' });
@@ -34,7 +74,7 @@ app.get('/health', (req: Request, res: Response) => {
 app.get('/api/salesman', async (req: Request, res: Response) => {
   try {
     const { phone } = req.query;
-    console.debug("processing request to get salesman by phone:", phone, typeof(phone));
+    // console.debug("processing request to get salesman by phone:", phone, typeof(phone));
 
     if (!phone || typeof phone !== 'string') {
       // If no phone provided, return all salesmen
@@ -321,10 +361,78 @@ app.patch('/api/inventory/:item_id', async (req: Request, res: Response) => {
   }
 });
 
+// GET /api/orders/details?order_id=... - get full order details for modal (with all information)
+// NOTE: This route must come BEFORE /api/orders/:id to avoid route matching conflicts
+app.get('/api/orders/details', async (req: Request, res: Response) => {
+  try {
+    const { order_id } = req.query;
+    
+    if (!order_id || typeof order_id !== 'string') {
+      return res.status(400).json({
+        error: 'Invalid request',
+        details: 'order_id query parameter is required',
+      });
+    }
+    
+    const id = order_id;
+
+    const orderWithItems = await orderService.getOrderWithItems(id);
+
+    if (!orderWithItems) {
+      return res.status(404).json({
+        error: 'Order not found',
+        details: `No order found with id: ${id}`,
+      });
+    }
+
+    // Get salesman name
+    const salesman = await salesmanService.getSalesmanById(orderWithItems.order.salesman_id);
+    const salesmanName = salesman?.name || 'Unknown';
+
+    // Fetch inventory items to get units
+    const itemIds = orderWithItems.items.map(item => item.item_id);
+    const inventoryItems = await inventoryService.getItemsByIds(itemIds);
+    const inventoryMap = new Map(inventoryItems.map(item => [item.item_id, item]));
+
+    // Build full response with all fields
+    const items = orderWithItems.items.map(item => {
+      const inventoryItem = inventoryMap.get(item.item_id);
+      return {
+        order_item_id: item.order_item_id,
+        item_id: item.item_id,
+        item_name: item.item_name,
+        quantity: item.quantity,
+        unit: inventoryItem?.unit || 'units',
+        unit_price: item.unit_price,
+        line_total: item.line_total,
+      };
+    });
+
+    let orderDetails: any = {
+      order_id: orderWithItems.order.order_id,
+      salesman_name: salesmanName,
+      status: orderWithItems.order.status,
+      total_amount: orderWithItems.order.total_amount,
+      created_at: orderWithItems.order.created_at,
+      updated_at: orderWithItems.order.updated_at,
+      items: items,
+    };
+    // console.log("order details returned :", orderDetails);
+
+    return res.json(orderDetails);
+  } catch (err) {
+    console.error('Error fetching full order details:', err);
+    return res.status(500).json({
+      error: 'Failed to fetch full order details',
+      details: err instanceof Error ? err.message : 'Unknown error',
+    });
+  }
+});
+
 // GET /api/orders/:id - get order details with items and units
 app.get('/api/orders/:id', async (req: Request, res: Response) => {
   try {
-    console.log("received request to get order details with id:", req.params.id);
+    // console.log("received request to get order details with id:", req.params.id);
     const { id } = req.params;
 
     const orderWithItems = await orderService.getOrderWithItems(id);
@@ -363,62 +471,6 @@ app.get('/api/orders/:id', async (req: Request, res: Response) => {
     console.error('Error fetching order details:', err);
     return res.status(500).json({
       error: 'Failed to fetch order details',
-      details: err instanceof Error ? err.message : 'Unknown error',
-    });
-  }
-});
-
-// GET /api/orders/:id/details - get full order details for modal (with all information)
-app.get('/api/orders/:id/details', async (req: Request, res: Response) => {
-  try {
-    console.log("received request to get full order details with id:", req.params.id);
-    const { id } = req.params;
-
-    const orderWithItems = await orderService.getOrderWithItems(id);
-
-    if (!orderWithItems) {
-      return res.status(404).json({
-        error: 'Order not found',
-        details: `No order found with id: ${id}`,
-      });
-    }
-
-    // Get salesman name
-    const salesman = await salesmanService.getSalesmanById(orderWithItems.order.salesman_id);
-    const salesmanName = salesman?.name || 'Unknown';
-
-    // Fetch inventory items to get units
-    const itemIds = orderWithItems.items.map(item => item.item_id);
-    const inventoryItems = await inventoryService.getItemsByIds(itemIds);
-    const inventoryMap = new Map(inventoryItems.map(item => [item.item_id, item]));
-
-    // Build full response with all fields
-    const items = orderWithItems.items.map(item => {
-      const inventoryItem = inventoryMap.get(item.item_id);
-      return {
-        order_item_id: item.order_item_id,
-        item_id: item.item_id,
-        item_name: item.item_name,
-        quantity: item.quantity,
-        unit: inventoryItem?.unit || 'units',
-        unit_price: item.unit_price,
-        line_total: item.line_total,
-      };
-    });
-
-    return res.json({
-      order_id: orderWithItems.order.order_id,
-      salesman_name: salesmanName,
-      status: orderWithItems.order.status,
-      total_amount: orderWithItems.order.total_amount,
-      created_at: orderWithItems.order.created_at,
-      updated_at: orderWithItems.order.updated_at,
-      items: items,
-    });
-  } catch (err) {
-    console.error('Error fetching full order details:', err);
-    return res.status(500).json({
-      error: 'Failed to fetch full order details',
       details: err instanceof Error ? err.message : 'Unknown error',
     });
   }
@@ -559,7 +611,7 @@ app.get('/api/order-update-requests', async (req: Request, res: Response) => {
 // POST /api/order-update-requests - create update request (single item change)
 app.post('/api/order-update-requests', async (req: Request, res: Response) => {
   try {
-    console.log("received order update request with body:", req.body);
+    // console.log("received order update request with body:", req.body);
     const { order_id, salesman_id, item_name, delta } = req.body;
 
     if (!order_id || !salesman_id || !item_name) {
@@ -681,7 +733,7 @@ app.patch('/api/order-update-requests/:id/reject', async (req: Request, res: Res
 app.post('/api/webhook/bolna', async (req: Request, res: Response) => {
   try {
     const { id: bolna_call_id, context_details, transcript, user_number: salesman_phone, summary, affected_order_id } = req.body;
-    console.log("received webhook from bolna with body:", bolna_call_id, context_details, transcript, salesman_phone, summary, affected_order_id);
+    // console.log("received webhook from bolna with body:", bolna_call_id, context_details, transcript, salesman_phone, summary, affected_order_id);
 
     if (!bolna_call_id) {
       return res.status(400).json({
